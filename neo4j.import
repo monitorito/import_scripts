@@ -1,0 +1,60 @@
+/** Create 1 entity node, representing the user **/
+CREATE (:User)
+
+/** Domains **/
+CREATE CONSTRAINT ON (d:Domain) ASSERT d.domain IS UNIQUE;
+
+USING PERIODIC COMMIT 10000
+LOAD CSV WITH HEADERS FROM "file:///domains.csv" AS row
+MERGE (:Domain {domain: row.domain});
+
+/** Resources **/
+CREATE CONSTRAINT ON (r:Resource) ASSERT r.url IS UNIQUE;
+
+/** Root Requests + Other Edges **/
+USING PERIODIC COMMIT 10000
+LOAD CSV WITH HEADERS FROM "file:///rootRequests.csv" AS row
+MATCH (d: Domain{domain: row.resourceDomain}), (u:User)
+MERGE (r:Resource {url: row.resourceUrl})
+MERGE (d) -[:HAS_RESOURCE]-> (r)
+MERGE (u) -[:REQUESTED {requestID: toInt(row.requestID), 
+			timestamp: toInt(row.timestamp), 
+			method: row.method, 
+			type: row.type}]-> (r)
+
+USING PERIODIC COMMIT 10000
+LOAD CSV WITH HEADERS FROM "file:///edges.csv" AS row
+MATCH (d1: Domain{domain: row.fromResourceDomain}), (d2: Domain{domain: row.toResourceDomain})
+MERGE (n1:Resource {url: row.fromResource})
+MERGE (d1) -[:HAS_RESOURCE]-> (n1)
+MERGE (n2:Resource {url: row.toResource})
+MERGE (d2) -[:HAS_RESOURCE]-> (n2)
+FOREACH (x IN CASE WHEN row.edgeType = "REQUEST" THEN [1] ELSE [] END |
+	MERGE (n1)-[:REQUESTED {requestID: toInt(row.requestID), 
+				timestamp: toInt(row.timestamp), 
+				method: row.method, 
+				type: row.type}]->(n2)
+)
+FOREACH (x IN CASE WHEN row.edgeType = "REDIRECT" THEN [1] ELSE [] END |
+	MERGE (n1)-[:REDIRECTED_TO]->(n2)
+)
+FOREACH (x IN CASE WHEN row.edgeType = "REFERRAL" THEN [1] ELSE [] END |
+	MERGE (n1)-[:REFERRED_TO {requestID: toInt(row.requestID), 
+				  timestamp: toInt(row.timestamp), 
+				  method: row.method, 
+				  type: row.type}]->(n2)
+)
+
+/** Cookies **/
+CREATE INDEX ON :Cookie(key)
+
+USING PERIODIC COMMIT 10000
+LOAD CSV WITH HEADERS FROM "file:///cookies.csv" AS row
+MATCH (r:Resource {url: row.Resource})
+MERGE (r) -[:HAS_COOKIE]-> (c:Cookie {key: row.key})
+ON CREATE SET c.value = [row.value],
+		c.type = [row.type],
+		c.sendByRequest = [row.requestID]
+ON MATCH SET  c.value = c.value + row.value,
+		c.type = c.type + row.type,
+		c.sendByRequest = c.sendByRequest + row.requestID;
